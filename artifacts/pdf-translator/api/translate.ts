@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Mistral } from '@mistralai/mistralai';
+
 
 interface TranslateRequestBody {
-  model: string;
+  model?: string;
   imageBase64: string;
   sourceLanguage: string;
   targetLanguage: string;
@@ -49,9 +49,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { imageBase64, sourceLanguage, targetLanguage, notes } =
     req.body as TranslateRequestBody;
 
-  const apiKey = process.env.MISTRAL_API_KEY;
+
+  // Lấy API key từ biến môi trường OPENROUTER_API_KEY
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'Server misconfiguration: MISTRAL_API_KEY is not set' });
+    return res.status(500).json({ error: 'Server misconfiguration: OPENROUTER_API_KEY is not set' });
   }
 
   if (!imageBase64) {
@@ -61,13 +63,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
 
   try {
-    const client = new Mistral({ apiKey });
 
-    // Lấy model từ biến môi trường MISTRAL_MODEL (đặt trong Vercel),
-    // nếu không có thì dùng mặc định 'mistral-medium-2505'.
-    const model = process.env.MISTRAL_MODEL || 'glm-5-2';
-    const sourceDesc =
-      sourceLanguage === 'Auto Detect' ? 'ngôn ngữ được phát hiện' : sourceLanguage;
+    // Lấy model từ biến môi trường OPENROUTER_MODEL, nếu không có thì dùng mặc định
+    const model = process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3.5-super-vl:free';
+    const sourceDesc = sourceLanguage === 'Auto Detect' ? 'ngôn ngữ được phát hiện' : sourceLanguage;
 
     const translationPrompt = [
       `Dịch đoạn văn bản trong hình ảnh từ ${sourceDesc} sang ${targetLanguage}.`,
@@ -78,20 +77,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter(Boolean)
       .join('\n');
 
-    const chatResponse = await client.chat.complete({
-      model,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: translationPrompt },
-            { type: 'image_url', imageUrl: `data:image/png;base64,${imageBase64}` },
-          ],
-        },
-      ],
+    // Gọi OpenRouter API
+    const openrouterRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_REFERER || '', // optional, for OpenRouter analytics
+        'X-Title': 'Gemini PDF Translator',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: translationPrompt },
+              { type: 'image_url', image_url: `data:image/png;base64,${imageBase64}` },
+            ],
+          },
+        ],
+      }),
     });
 
-    const rawText = chatResponse.choices?.[0]?.message?.content;
+    if (!openrouterRes.ok) {
+      const errData: any = await openrouterRes.json().catch(() => ({}));
+      const message = errData?.error || `OpenRouter error ${openrouterRes.status}`;
+      return res.status(500).json({ error: message });
+    }
+
+    const openrouterData: any = await openrouterRes.json();
+    const rawText = openrouterData.choices?.[0]?.message?.content;
 
     if (!rawText) {
       return res.status(200).json({ translation: 'No translation received' });
